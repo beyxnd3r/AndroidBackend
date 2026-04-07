@@ -11,10 +11,15 @@ set(INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 find_package(SDL2 REQUIRED)
 include_directories(${SDL2_INCLUDE_DIRS})
 
-# ---------------- OpenGL / GLEW ----------------
+# ---------------- OpenGL ----------------
 find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
 
+# ---------------- PkgConfig / GLEW / ZMQ ----------------
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLEW REQUIRED glew)
+pkg_check_modules(ZMQ REQUIRED libzmq)
+
+include_directories(${GLEW_INCLUDE_DIRS})
 include_directories(${INCLUDE_DIR})
 
 # ---------------- IMGUI ----------------
@@ -34,9 +39,9 @@ target_include_directories(imgui PUBLIC
 )
 
 target_link_libraries(imgui PUBLIC
-    ${SDL2_LIBRARIES}
+    SDL2::SDL2
     ${OPENGL_LIBRARIES}
-    GLEW::GLEW
+    ${GLEW_LIBRARIES}
 )
 
 # ---------------- IMPLOT ----------------
@@ -52,16 +57,13 @@ target_include_directories(implot PUBLIC
 
 target_link_libraries(implot PUBLIC imgui)
 
+# ---------------- JSON ----------------
+find_package(nlohmann_json REQUIRED)
+
 # ---------------- MAIN ----------------
 add_executable(main
     ${SRC_DIR}/main.cpp
 )
-
-# ---------------- ZMQ + JSON ----------------
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(ZMQ REQUIRED libzmq)
-
-find_package(nlohmann_json REQUIRED)
 
 target_include_directories(main PRIVATE
     ${ZMQ_INCLUDE_DIRS}
@@ -70,9 +72,9 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     imgui
     implot
-    ${SDL2_LIBRARIES}
+    SDL2::SDL2
     ${OPENGL_LIBRARIES}
-    GLEW::GLEW
+    ${GLEW_LIBRARIES}
     ${ZMQ_LIBRARIES}
     nlohmann_json::nlohmann_json
 )
