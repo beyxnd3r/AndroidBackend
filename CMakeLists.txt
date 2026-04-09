@@ -22,6 +22,10 @@ pkg_check_modules(ZMQ REQUIRED libzmq)
 include_directories(${GLEW_INCLUDE_DIRS})
 include_directories(${INCLUDE_DIR})
 
+# ---------------- PostgreSQL ----------------
+find_package(PostgreSQL REQUIRED)
+include_directories(${PostgreSQL_INCLUDE_DIRS})
+
 # ---------------- IMGUI ----------------
 add_library(imgui STATIC
     ${THIRD_PARTY_DIR}/imgui/imgui.cpp
@@ -67,6 +71,7 @@ add_executable(main
 
 target_include_directories(main PRIVATE
     ${ZMQ_INCLUDE_DIRS}
+    ${PostgreSQL_INCLUDE_DIRS}
 )
 
 target_link_libraries(main PRIVATE
@@ -76,5 +81,6 @@ target_link_libraries(main PRIVATE
     ${OPENGL_LIBRARIES}
     ${GLEW_LIBRARIES}
     ${ZMQ_LIBRARIES}
+    ${PostgreSQL_LIBRARIES}
     nlohmann_json::nlohmann_json
 )

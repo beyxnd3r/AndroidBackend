@@ -7,6 +7,8 @@
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
 
+#include <libpq-fe.h> 
+
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
@@ -37,8 +39,78 @@ float graph_time = 0.0f;
 std::vector<float> lat_values;
 std::vector<float> lon_values;
 
-
 bool json_loaded = false;
+
+
+
+PGconn* conn; // ДОБАВЛЕНО
+
+void init_db()
+{
+    conn = PQconnectdb("host=localhost port=5432 dbname=network_monitor user=postgres password=1234");
+
+    if (PQstatus(conn) != CONNECTION_OK)
+    {
+        std::cerr << "DB connection failed: " << PQerrorMessage(conn) << std::endl;
+        exit(1);
+    }
+
+    std::cout << "Connected to PostgreSQL\n";
+}
+
+void insert_to_db(const nlohmann::json& json)
+{
+    if (!json.contains("networks")) return;
+
+    for (auto& net : json["networks"])
+    {
+        std::string time = json.value("time", "");
+        std::string lat = std::to_string(json.value("latitude", 0.0));
+        std::string lon = std::to_string(json.value("longitude", 0.0));
+        std::string alt = std::to_string(json.value("altitude", 0.0));
+        std::string acc = std::to_string(json.value("accuracy", 0.0));
+
+        std::string pci = std::to_string(net.value("pci", 0));
+        std::string rsrp = std::to_string(net.value("rsrp", 0));
+        std::string rsrq = std::to_string(net.value("rsrq", 0));
+        std::string rssi = std::to_string(net.value("rssi", 0));
+        std::string sinr = std::to_string(net.value("rssnr", 0));
+
+        const char* params[10] = {
+            time.c_str(),
+            lat.c_str(),
+            lon.c_str(),
+            alt.c_str(),
+            acc.c_str(),
+            pci.c_str(),
+            rsrp.c_str(),
+            rsrq.c_str(),
+            rssi.c_str(),
+            sinr.c_str()
+        };
+
+        PGresult* res = PQexecParams(
+            conn,
+            "INSERT INTO measurements(time, latitude, longitude, altitude, accuracy, pci, rsrp, rsrq, rssi, rssnr) "
+            "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+            10,
+            NULL,
+            params,
+            NULL,
+            NULL,
+            0
+        );
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        {
+            std::cerr << "Insert error: " << PQerrorMessage(conn) << std::endl;
+        }
+
+        PQclear(res);
+    }
+}
+
+
 
 void load_from_json()
 {
@@ -66,7 +138,6 @@ void load_from_json()
         }
         catch (...)
         {
-            
         }
     }
 
@@ -74,12 +145,13 @@ void load_from_json()
 }
 
 
+
 void run_server(location* loc)
 {
     zmq::context_t ctx(1);
     zmq::socket_t socket(ctx, ZMQ_REP);
 
-    socket.bind("tcp://*:5555");
+    socket.bind("tcp://0.0.0.0:5555");
 
     std::cout << "SERVER STARTED ON PORT 5555\n";
 
@@ -98,6 +170,8 @@ void run_server(location* loc)
         try
         {
             auto json = nlohmann::json::parse(data);
+
+            insert_to_db(json); 
 
             std::lock_guard<std::mutex> lock(loc_mutex);
 
@@ -138,7 +212,7 @@ void run_server(location* loc)
             }
 
             std::ofstream file("location_log.json", std::ios::app);
-            file << json.dump(4) << std::endl;
+            file << json.dump() << std::endl;
 
             socket.send(zmq::buffer("OK"), zmq::send_flags::none);
         }
@@ -148,6 +222,8 @@ void run_server(location* loc)
         }
     }
 }
+
+
 
 void run_gui(location* loc)
 {
@@ -175,13 +251,11 @@ void run_gui(location* loc)
 
     while (!done)
     {
-        
         if (!json_loaded)
         {
             load_from_json();
             json_loaded = true;
         }
-        
 
         SDL_Event event;
 
@@ -228,18 +302,17 @@ void run_gui(location* loc)
         ImGui::Text("Accuracy: %.2f m", acc);
         ImGui::Text("Time: %s", time.c_str());
 
-        
         static float last_lat = 0.0f;
-static float last_lon = 0.0f;
+        static float last_lon = 0.0f;
 
-if (fabs(lat - last_lat) > 0.00001f || fabs(lon - last_lon) > 0.00001f)
-{
-    lat_values.push_back(lat);
-    lon_values.push_back(lon);
+        if (fabs(lat - last_lat) > 0.00001f || fabs(lon - last_lon) > 0.00001f)
+        {
+            lat_values.push_back(lat);
+            lon_values.push_back(lon);
 
-    last_lat = lat;
-    last_lon = lon;
-}
+            last_lat = lat;
+            last_lon = lon;
+        }
 
         ImGui::Spacing();
 
@@ -298,7 +371,6 @@ if (fabs(lat - last_lat) > 0.00001f || fabs(lon - last_lon) > 0.00001f)
             ImPlot::EndPlot();
         }
 
-        
         if (ImPlot::BeginPlot("GPS Track"))
         {
             if (!lat_values.empty())
@@ -312,7 +384,6 @@ if (fabs(lat - last_lat) > 0.00001f || fabs(lon - last_lon) > 0.00001f)
             }
             ImPlot::EndPlot();
         }
-
 
         ImGui::End();
 
@@ -338,8 +409,12 @@ if (fabs(lat - last_lat) > 0.00001f || fabs(lon - last_lon) > 0.00001f)
     SDL_Quit();
 }
 
+
+
 int main()
 {
+    init_db(); 
+
     static location locationInfo;
 
     std::thread server_thread(run_server, &locationInfo);
@@ -347,6 +422,8 @@ int main()
 
     server_thread.detach();
     gui_thread.join();
+
+    PQfinish(conn); 
 
     return 0;
 }
