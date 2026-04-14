@@ -1,3 +1,4 @@
 /build/
 location_log.json
 network_monitor.session.sql
+.vscode/
