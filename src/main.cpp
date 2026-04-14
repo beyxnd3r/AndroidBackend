@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
+#include <map> 
 
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
@@ -32,8 +33,12 @@ struct location
 
 std::mutex loc_mutex;
 
-std::vector<float> rsrp_values;
-std::vector<float> time_values;
+std::map<int, std::vector<float>> rsrp_values_map;
+std::map<int, std::vector<float>> rssi_values_map;
+std::map<int, std::vector<float>> sinr_values_map;
+std::map<int, std::vector<float>> pci_values_map;
+std::map<int, std::vector<float>> time_values_map;
+
 float graph_time = 0.0f;
 
 std::vector<float> lat_values;
@@ -41,9 +46,7 @@ std::vector<float> lon_values;
 
 bool json_loaded = false;
 
-
-
-PGconn* conn; // ДОБАВЛЕНО
+PGconn* conn; 
 
 void init_db()
 {
@@ -110,14 +113,14 @@ void insert_to_db(const nlohmann::json& json)
     }
 }
 
-
-
+// ИЗМЕНЕНО: Функция теперь загружает и GPS, и данные сетей для графиков
 void load_from_json()
 {
     std::ifstream file("location_log.json");
     if (!file.is_open()) return;
 
     std::string line;
+    float history_time = 0.0f; // Внутренний счетчик времени для оси X
 
     while (std::getline(file, line))
     {
@@ -127,24 +130,40 @@ void load_from_json()
         {
             auto json = nlohmann::json::parse(line);
 
+            // 1. Загрузка GPS
             if (json.contains("latitude") && json.contains("longitude"))
             {
-                float lat = json["latitude"];
-                float lon = json["longitude"];
+                lat_values.push_back(json["latitude"]);
+                lon_values.push_back(json["longitude"]);
+            }
 
-                lat_values.push_back(lat);
-                lon_values.push_back(lon);
+            // 2. Загрузка данных сетей для графиков
+            if (json.contains("networks") && json["networks"].is_array())
+            {
+                bool has_data_in_row = false;
+                for (auto& net : json["networks"])
+                {
+                    if (net.value("type", "") == "LTE")
+                    {
+                        int pci = net.value("pci", 0);
+                        rsrp_values_map[pci].push_back((float)net.value("rsrp", 0));
+                        rssi_values_map[pci].push_back((float)net.value("rssi", 0));
+                        sinr_values_map[pci].push_back((float)net.value("rssnr", 0));
+                        pci_values_map[pci].push_back((float)pci);
+                        time_values_map[pci].push_back(history_time);
+                        
+                        has_data_in_row = true;
+                    }
+                }
+                if (has_data_in_row) history_time += 1.0f;
             }
         }
-        catch (...)
-        {
-        }
+        catch (...) {}
     }
 
-    std::cout << "Loaded " << lat_values.size() << " GPS points\n";
+    graph_time = history_time; // Синхронизируем глобальное время с концом истории
+    std::cout << "Loaded " << lat_values.size() << " GPS points and network history\n";
 }
-
-
 
 void run_server(location* loc)
 {
@@ -222,8 +241,6 @@ void run_server(location* loc)
         }
     }
 }
-
-
 
 void run_gui(location* loc)
 {
@@ -322,29 +339,39 @@ void run_gui(location* loc)
         {
             for (auto& lte : lte_copy)
             {
+                int pci = lte.value("pci", 0);
                 ImGui::Text("CI: %d", lte.value("ci", 0));
                 ImGui::Text("EARFCN: %d", lte.value("earfcn", 0));
-                ImGui::Text("PCI: %d", lte.value("pci", 0));
+                ImGui::Text("PCI: %d", pci);
                 ImGui::Text("TAC: %d", lte.value("tac", 0));
 
                 int rsrp = lte.value("rsrp", 0);
+                int rssi = lte.value("rssi", 0);
+                int rssnr = lte.value("rssnr", 0);
 
                 ImGui::Text("RSRP: %d", rsrp);
                 ImGui::Text("RSRQ: %d", lte.value("rsrq", 0));
-                ImGui::Text("RSSI: %d", lte.value("rssi", 0));
-                ImGui::Text("RSSNR: %d", lte.value("rssnr", 0));
+                ImGui::Text("RSSI: %d", rssi);
+                ImGui::Text("RSSNR: %d", rssnr);
 
-                rsrp_values.push_back((float)rsrp);
-                time_values.push_back(graph_time++);
+                rsrp_values_map[pci].push_back((float)rsrp);
+                rssi_values_map[pci].push_back((float)rssi);
+                sinr_values_map[pci].push_back((float)rssnr);
+                pci_values_map[pci].push_back((float)pci);
+                time_values_map[pci].push_back(graph_time);
 
-                if (rsrp_values.size() > 200)
+                if (rsrp_values_map[pci].size() > 200)
                 {
-                    rsrp_values.erase(rsrp_values.begin());
-                    time_values.erase(time_values.begin());
+                    rsrp_values_map[pci].erase(rsrp_values_map[pci].begin());
+                    rssi_values_map[pci].erase(rssi_values_map[pci].begin());
+                    sinr_values_map[pci].erase(sinr_values_map[pci].begin());
+                    pci_values_map[pci].erase(pci_values_map[pci].begin());
+                    time_values_map[pci].erase(time_values_map[pci].begin());
                 }
 
                 ImGui::Separator();
             }
+            graph_time++; 
         }
         else
         {
@@ -359,14 +386,44 @@ void run_gui(location* loc)
 
         if (ImPlot::BeginPlot("LTE RSRP"))
         {
-            if (!rsrp_values.empty())
+            for (auto& pair : rsrp_values_map)
             {
-                ImPlot::PlotLine(
-                    "RSRP",
-                    time_values.data(),
-                    rsrp_values.data(),
-                    rsrp_values.size()
-                );
+                int pci = pair.first;
+                std::string label = "PCI " + std::to_string(pci);
+                ImPlot::PlotLine(label.c_str(), time_values_map[pci].data(), pair.second.data(), pair.second.size());
+            }
+            ImPlot::EndPlot();
+        }
+
+        if (ImPlot::BeginPlot("LTE RSSI"))
+        {
+            for (auto& pair : rssi_values_map)
+            {
+                int pci = pair.first;
+                std::string label = "PCI " + std::to_string(pci);
+                ImPlot::PlotLine(label.c_str(), time_values_map[pci].data(), pair.second.data(), pair.second.size());
+            }
+            ImPlot::EndPlot();
+        }
+
+        if (ImPlot::BeginPlot("LTE SINR"))
+        {
+            for (auto& pair : sinr_values_map)
+            {
+                int pci = pair.first;
+                std::string label = "PCI " + std::to_string(pci);
+                ImPlot::PlotLine(label.c_str(), time_values_map[pci].data(), pair.second.data(), pair.second.size());
+            }
+            ImPlot::EndPlot();
+        }
+
+        if (ImPlot::BeginPlot("LTE PCI Activity"))
+        {
+            for (auto& pair : pci_values_map)
+            {
+                int pci = pair.first;
+                std::string label = "PCI " + std::to_string(pci);
+                ImPlot::PlotLine(label.c_str(), time_values_map[pci].data(), pair.second.data(), pair.second.size());
             }
             ImPlot::EndPlot();
         }
@@ -375,12 +432,7 @@ void run_gui(location* loc)
         {
             if (!lat_values.empty())
             {
-                ImPlot::PlotLine(
-                    "Path",
-                    lon_values.data(),
-                    lat_values.data(),
-                    lat_values.size()
-                );
+                ImPlot::PlotLine("Path", lon_values.data(), lat_values.data(), lat_values.size());
             }
             ImPlot::EndPlot();
         }
@@ -408,8 +460,6 @@ void run_gui(location* loc)
 
     SDL_Quit();
 }
-
-
 
 int main()
 {
